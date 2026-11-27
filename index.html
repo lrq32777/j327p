@@ -6948,6 +6948,7 @@ filter: drop-shadow(0 4px 6px rgba(0,0,0,0.25));
         <div class="screen">
             <div id="homeScreen" class="page active">
                 <div class="home-screen">
+<button id="worldSpaceButton" onclick="openWorldSpaces()" style="display:block;margin:6px auto;padding:7px 15px;border:1px solid #aaa;border-radius:18px;background:var(--theme-bg,#fff);color:inherit;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">世界空间</button>
                     <div class="profile-widget-container" id="profileWidgetContainer">
                         <div class="profile-widget">
                             <div class="profile-avatar-widget" id="widgetAvatar" onclick="changeAvatar()"></div>
@@ -9025,9 +9026,23 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
     <script>
         // --- [REFACTORED] IndexedDB Manager ---
                 // --- [REFACTORED & ROBUST] IndexedDB Manager (v3) ---
+
+        // JRSY world spaces: each page instance is permanently bound to one database.
+        const WORLD_KEY = 'JRSY_WORLD_REGISTRY_1:' + location.pathname;
+        function worldRegistry() {
+            const raw = localStorage.getItem(WORLD_KEY);
+            const list = raw ? JSON.parse(raw) : [{id:'original',name:'原始世界（旧数据）'}];
+            if (!Array.isArray(list) || !list.some(w=>w.id==='original')) throw new Error('世界列表损坏');
+            return list;
+        }
+        const requestedWorld = new URL(location.href).searchParams.get('world') || 'original';
+        const activeWorld = worldRegistry().find(w=>w.id===requestedWorld);
+        if (!activeWorld) throw new Error('未知世界，请返回原始网址');
+        const worldDbName = id => id==='original' ? 'JRSY_DB_V2' : 'JRSY_DB_WORLD_'+id;
+
         const dbManager = {
             db: null,
-            dbName: 'JRSY_DB_V2',
+            dbName: worldDbName(activeWorld.id),
             dbVersion: 11,
             stores: [
                 'friends', 'chatHistories', 'diaries', 'worldBooks', 'worldBookFolders', 
@@ -9083,9 +9098,12 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
                 });
             },
 
+            forStore(storeName) {
+                return (activeWorld.id !== 'original' && ['apiSettings','apiPresets'].includes(storeName) && this === dbManager) ? sharedApiDb.init() : this.init();
+            },
             // 核心修改：所有操作前都调用 this.init()
             set(storeName, data) {
-                return this.init().then(db => new Promise((resolve, reject) => {
+                return this.forStore(storeName).then(db => new Promise((resolve, reject) => {
                     const transaction = db.transaction(storeName, 'readwrite');
                     const store = transaction.objectStore(storeName);
                     const request = store.put(data);
@@ -9095,7 +9113,7 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
             },
 
             get(storeName, key) {
-                return this.init().then(db => new Promise((resolve, reject) => {
+                return this.forStore(storeName).then(db => new Promise((resolve, reject) => {
                     const transaction = db.transaction(storeName, 'readonly');
                     const store = transaction.objectStore(storeName);
                     const request = store.get(key);
@@ -9105,7 +9123,7 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
             },
 
             getAll(storeName) {
-                return this.init().then(db => new Promise((resolve, reject) => {
+                return this.forStore(storeName).then(db => new Promise((resolve, reject) => {
                     const transaction = db.transaction(storeName, 'readonly');
                     const store = transaction.objectStore(storeName);
                     const request = store.getAll();
@@ -9115,7 +9133,7 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
             },
             
             delete(storeName, key) {
-                return this.init().then(db => new Promise((resolve, reject) => {
+                return this.forStore(storeName).then(db => new Promise((resolve, reject) => {
                     const transaction = db.transaction(storeName, 'readwrite');
                     const store = transaction.objectStore(storeName);
                     const request = store.delete(key);
@@ -9125,7 +9143,7 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
             },
 
             clear(storeName) {
-                return this.init().then(db => new Promise((resolve, reject) => {
+                return this.forStore(storeName).then(db => new Promise((resolve, reject) => {
                     const transaction = db.transaction(storeName, 'readwrite');
                     const store = transaction.objectStore(storeName);
                     const request = store.clear();
@@ -9135,6 +9153,7 @@ onchange="handleFriendAvatarUpload(event)"><span id="friendAvatarPreview">+</spa
             }
         };
 
+const sharedApiDb = {...dbManager, db:null, dbName:'JRSY_DB_V2'};
 async function requestPersistentStorage() {
     if (navigator.storage && navigator.storage.persist) {
         const isPersisted = await navigator.storage.persisted();
@@ -10598,7 +10617,7 @@ if (loadedApiSettings) {
         
         async function initDefaultData() {
             // 清空所有表
-            await Promise.all(dbManager.stores.map(storeName => dbManager.clear(storeName)));
+            await Promise.all(dbManager.stores.filter(n=>!(['apiSettings','apiPresets'].includes(n))).map(storeName => dbManager.clear(storeName)));
             
             // 设置默认值并保存
             friends = [];
@@ -15827,7 +15846,7 @@ const fullExport = {
         }
 
         function importData() {
-            showConfirm("导入数据将覆盖当前所有设置和聊天记录，确定要继续吗？", (confirmed) => {
+            showConfirm("导入数据将覆盖当前世界所有设置和聊天记录，以及所有世界共用的 API 设置，确定要继续吗？", (confirmed) => {
                 if (!confirmed) return;
                 const input = document.createElement('input');
                 input.type = 'file'; input.accept = '.json,application/json'; input.style.display = 'none';
@@ -26989,6 +27008,40 @@ ${specialInstructionsForAI || ''}
     }
 }
 
+
+function goWorld(id) {
+    const u = new URL(location.href);
+    if(id==='original') u.searchParams.delete('world'); else u.searchParams.set('world',id);
+    location.assign(u.href);
+}
+function openWorldSpaces() {
+    if(document.getElementById('worldSpacePanel')) return;
+    const overlay=document.createElement('div'); overlay.id='worldSpacePanel';
+    overlay.style.cssText='position:fixed;inset:0;z-index:2147483000;background:#0008;display:flex;align-items:center;justify-content:center;padding:18px';
+    const panel=document.createElement('div'); panel.style.cssText='background:#fff;color:#222;border-radius:16px;padding:18px;width:100%;max-width:420px;max-height:85vh;overflow:auto;font:15px system-ui'; overlay.append(panel);
+    const add=(tag,txt)=>{const e=document.createElement(tag);e.textContent=txt;panel.append(e);return e;};
+    const btn=(txt,fn)=>{const b=add('button',txt);b.style.cssText='display:block;width:100%;padding:10px;margin:7px 0;border:1px solid #ccc;border-radius:9px;background:#f5f5f5;color:#222';b.onclick=fn;return b;};
+    add('h3','世界空间'); add('p','当前：'+activeWorld.name+'。每个世界独立存储，API 共用。切换会重新加载页面。');
+    for(const w of worldRegistry()) { const b=btn(w.name+(w.id===activeWorld.id?'（当前）':''),()=>{if(w.id!==activeWorld.id && confirm('请确认当前没有正在生成的消息。切换世界？'))goWorld(w.id);}); if(w.id===activeWorld.id)b.disabled=true; }
+    btn('重命名当前世界',()=>{const n=prompt('世界名称',activeWorld.name)?.trim();if(!n)return;const list=worldRegistry();list.find(w=>w.id===activeWorld.id).name=n;localStorage.setItem(WORLD_KEY,JSON.stringify(list));location.reload();});
+    add('h4','创建独立世界'); const name=add('input','');name.placeholder='新世界名称';name.style.cssText='width:100%;padding:8px;box-sizing:border-box';
+    add('p','可选：复制当前世界的人物基础人设（不复制聊天、记忆、朋友圈、论坛或绑定世界书）。旧世界不删除任何内容。');
+    const selected=[];
+    for(const f of friends.filter(f=>!f.isGroup)){const l=add('label','');l.style.cssText='display:block;padding:6px';const c=document.createElement('input');c.type='checkbox';l.append(c,document.createTextNode(' '+(f.remark||f.name)));selected.push([c,f]);}
+    const create=btn('创建并进入',async()=>{const n=name.value.trim();if(!n)return alert('请输入世界名称');create.disabled=true;let target;try{
+        const id=crypto.randomUUID();target={...dbManager,db:null,dbName:worldDbName(id)};
+        const db=await target.init();
+        const chosen=selected.filter(([c])=>c.checked).map(([,f])=>f);
+        const tx=db.transaction(['friends','appSettings'],'readwrite');
+        const done=new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error||new Error('事务中止'));tx.onerror=()=>reject(tx.error);});
+        for(const f of chosen){const clean={id:f.id,name:f.name,remark:f.remark,role:f.role,avatar:f.avatar,avatarImage:f.avatarImage,lastMessage:'我们已经是好友了!',pinned:false,worldBookIds:[],boundFolderIds:[],activeUserPersonaId:'default_user',diaryWritingUrge:0,turnCountSinceLastMemory:0,proactiveMessageDebt:0,shoppingRecordsCache:{},isOfflineMode:false};tx.objectStore('friends').put(clean);}
+        tx.objectStore('appSettings').put({id:'settings'});
+        await done;db.close();const list=worldRegistry();list.push({id,name:n});localStorage.setItem(WORLD_KEY,JSON.stringify(list));goWorld(id);
+    }catch(e){alert('创建失败：'+e.message);create.disabled=false;}});
+    btn('使用原版数据导出',()=>exportData());
+    btn('关闭',()=>overlay.remove());document.body.append(overlay);
+}
+const worldButton=document.getElementById('worldSpaceButton');if(worldButton)worldButton.textContent='世界空间 · '+activeWorld.name;
     </script>
  
     
